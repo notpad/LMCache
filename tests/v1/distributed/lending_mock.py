@@ -3,7 +3,7 @@
 a REMOTE-wanting config whose adapter cannot lend (``nonlending_mock``)."""
 
 # Standard
-from typing import Optional
+from typing import Callable, Optional
 from unittest.mock import MagicMock, patch
 import threading
 
@@ -38,7 +38,7 @@ from lmcache.v1.distributed.memory_manager import (
     BorrowedTensorMemoryObj,
 )
 from lmcache.v1.distributed.transfer_channel.api import TransferChannelAddress
-from lmcache.v1.memory_management import MemoryObj
+from lmcache.v1.memory_management import MemoryObj, MemoryObjMetadata
 
 
 class LendingMockL2AdapterConfig(PeerL2AdapterConfigBase):
@@ -181,7 +181,11 @@ class LendingMockL2Adapter(LendingPeerL2AdapterBase):
         self._lookup_efd.notify()
 
     def _process_lookup_result(
-        self, keys: list[ObjectKey], addresses: list[TransferChannelAddress]
+        self,
+        task_id: L2TaskId,
+        keys: list[ObjectKey],
+        addresses: list[TransferChannelAddress],
+        started_at: float,
     ) -> Bitmap:
         bitmap = Bitmap(len(keys))
         for i, (key, address) in enumerate(zip(keys, addresses, strict=True)):
@@ -190,11 +194,11 @@ class LendingMockL2Adapter(LendingPeerL2AdapterBase):
                 self._reserved[key] = self._reserved.get(key, 0) + 1
         return bitmap
 
-    def submit_unlock(self, keys: list[ObjectKey]) -> None:
+    def submit_unlock(self, keys: list[ObjectKey], *, wait: bool = False) -> None:
         """Return one reservation per key; the controller never names a lent key."""
         for key in keys:
             self._reserved[key] -= 1
-        super().submit_unlock(keys)
+        super().submit_unlock(keys, wait=wait)
 
     # -- lending ------------------------------------------------------------
 
@@ -248,7 +252,22 @@ class LendingMockL2Adapter(LendingPeerL2AdapterBase):
         pass
 
     def _unregister_peer_region(self) -> None:
-        pass
+        self._drain_borrows_for_close()
+
+    # The mock lends through its own take_borrowed_objects, so the base's
+    # reservation hooks are never reached.
+    def _accept_address(self, address: TransferChannelAddress) -> bool:
+        raise NotImplementedError
+
+    def _make_borrowed_object(
+        self,
+        address: TransferChannelAddress,
+        metadata: MemoryObjMetadata,
+        *,
+        lease_is_valid: Callable[[], bool],
+        on_release: Callable[[], None],
+    ) -> BorrowedMemoryObj | None:
+        raise NotImplementedError
 
 
 def _create_lending_mock_adapter(
